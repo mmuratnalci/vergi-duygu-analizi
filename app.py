@@ -4,9 +4,11 @@ import io
 import re
 from collections import Counter
 
+import matplotlib
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from wordcloud import WordCloud
 
 st.set_page_config(page_title="Duygu Analizi", page_icon="💬", layout="wide")
 
@@ -149,13 +151,38 @@ def analiz_et(seri: pd.Series) -> pd.DataFrame:
     return sonuc
 
 
-def sik_kelimeler(metinler: pd.Series, adet: int = 15) -> pd.DataFrame:
+def kelime_sayilari(metinler: pd.Series) -> Counter:
     sayac = Counter()
     for m in metinler:
         for k in sozcukle(m):
             if len(k) > 2 and k not in DURAK_SOZCUKLER:
                 sayac[k] += 1
-    return pd.DataFrame(sayac.most_common(adet), columns=["Kelime", "Adet"])
+    return sayac
+
+
+def sik_kelimeler(metinler: pd.Series, adet: int = 15) -> pd.DataFrame:
+    return pd.DataFrame(kelime_sayilari(metinler).most_common(adet), columns=["Kelime", "Adet"])
+
+
+# Matplotlib ile gelen DejaVu Sans Türkçe harfleri destekler; Cloud'da da mevcuttur.
+YAZI_TIPI = str(matplotlib.get_data_path() + "/fonts/ttf/DejaVuSans-Bold.ttf")
+
+
+def kelime_bulutu_olustur(sayac: Counter, renk: str):
+    bulut = WordCloud(
+        width=1000,
+        height=500,
+        background_color="white",
+        font_path=YAZI_TIPI,
+        max_words=100,
+        prefer_horizontal=0.9,
+        margin=6,
+        max_font_size=110,
+        relative_scaling=0.5,
+        collocations=False,
+        color_func=lambda *a, **k: renk,
+    )
+    return bulut.generate_from_frequencies(dict(sayac)).to_image()
 
 
 st.markdown(
@@ -203,7 +230,9 @@ metin_sutunlari = [c for c in df.columns if df[c].dtype == object]
 secenekler = metin_sutunlari or list(df.columns)
 sutun = st.selectbox("Analiz edilecek yorum sütununu seçin", secenekler)
 
-if not st.button("Analiz Et", type="primary"):
+if st.button("Analiz Et", type="primary"):
+    st.session_state["analiz_dosyasi"] = (yuklenen.name, sutun)
+if st.session_state.get("analiz_dosyasi") != (yuklenen.name, sutun):
     st.stop()
 
 sonuc = analiz_et(df[sutun])
@@ -243,6 +272,29 @@ else:
     kg.update_traces(marker_color="#4c6ef5")
     kg.update_layout(margin=dict(t=20, b=20), height=480)
     st.plotly_chart(kg, use_container_width=True)
+
+st.subheader("Kelime Bulutu")
+grup = st.radio(
+    "Hangi yorumlar için kelime bulutu oluşturulsun?",
+    ["Tüm yorumlar", "Olumlu yorumlar", "Olumsuz yorumlar", "Nötr yorumlar"],
+    horizontal=True,
+)
+etiket = {"Olumlu yorumlar": "Olumlu", "Olumsuz yorumlar": "Olumsuz", "Nötr yorumlar": "Nötr"}.get(grup)
+secili = sonuc if etiket is None else sonuc[sonuc["Duygu"] == etiket]
+sayac = kelime_sayilari(secili["Yorum"])
+if not sayac:
+    st.write("Bu grup için kelime bulutu oluşturacak yeterli kelime yok.")
+else:
+    gorsel = kelime_bulutu_olustur(sayac, RENKLER.get(etiket, "#4c6ef5"))
+    st.image(gorsel, use_container_width=True)
+    tampon = io.BytesIO()
+    gorsel.save(tampon, format="PNG")
+    st.download_button(
+        "Kelime bulutunu PNG olarak indir",
+        data=tampon.getvalue(),
+        file_name=f"kelime_bulutu_{(etiket or 'tum').lower()}.png",
+        mime="image/png",
+    )
 
 st.subheader("Olumsuz Yorumlar")
 olumsuz = sonuc[sonuc["Duygu"] == "Olumsuz"][["Yorum", "Puan"]]
